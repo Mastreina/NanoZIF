@@ -103,43 +103,11 @@ def quat_from_z_to_vec(vec: np.ndarray) -> np.ndarray:
     return np.array([np.cos(half), *(np.sin(half) * axis)])
 
 
-def rhombic_dodeca_vertices(diameter_nm: float) -> np.ndarray:
-    half = diameter_nm / 2.0
-    diag = half / 2.0
-    verts = []
-    for sign in (-1.0, 1.0):
-        verts.append((sign * half, 0.0, 0.0))
-        verts.append((0.0, sign * half, 0.0))
-        verts.append((0.0, 0.0, sign * half))
-    for sx, sy, sz in product((-1.0, 1.0), repeat=3):
-        verts.append((sx * diag, sy * diag, sz * diag))
-    return np.asarray(verts, dtype=float)
-
-
-def truncated_cube_vertices(edge_nm: float, trunc_ratio: float = 3.0) -> np.ndarray:
-    base_perms = {perm for perm in permutations((1.0, 1.0, trunc_ratio))}
-    coords = set()
-    for perm in base_perms:
-        for sx, sy, sz in product((-1.0, 1.0), repeat=3):
-            coords.add((sx * perm[0], sy * perm[1], sz * perm[2]))
-    scale = edge_nm / math.sqrt(8.0)
-    return scale * np.asarray(list(coords), dtype=float)
-
-
-def hex_prism_vertices(flat_diameter_nm: float, height_nm: float | None = None) -> np.ndarray:
-    """Regular hexagonal prism. `flat_diameter` is distance between opposite vertices."""
-    if height_nm is None:
-        height_nm = flat_diameter_nm
-    R = flat_diameter_nm / 2.0
-    angles = np.linspace(0.0, 2.0 * math.pi, 6, endpoint=False)
-    xy = np.array([[R * math.cos(a), R * math.sin(a)] for a in angles])
-    half_h = 0.5 * height_nm
-    verts = []
-    for z in (-half_h, half_h):
-        for x, y in xy:
-            verts.append((x, y, z))
-    return np.asarray(verts, dtype=float)
-
+from ..geometry.shapes import (
+    rhombic_dodecahedron_vertices as rhombic_dodeca_vertices,
+    truncated_cube_vertices,
+    hex_prism_vertices,
+)
 
 def generate_vertices(
     shape: str,

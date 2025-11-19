@@ -87,27 +87,8 @@ print(f"HPMC shell: [{R_target - HPMC_SHELL_HALF:.1f}, "
       f"{R_target + HPMC_SHELL_HALF:.1f}] nm")
 
 # ------------------------- Helper functions ------------------------
-def fibonacci_sphere(n):
-    """Evenly distribute n points on a unit sphere via golden-angle spiral."""
-    ga = math.pi * (3.0 - math.sqrt(5.0))
-    k = np.arange(n)
-    z = 1.0 - 2.0 * (k + 0.5) / n
-    r = np.sqrt(np.maximum(0.0, 1.0 - z * z))
-    theta = k * ga
-    x = r * np.cos(theta)
-    y = r * np.sin(theta)
-    return np.stack([x, y, z], axis=1)
-
-
-def cube_vertices(edge_nm):
-    """Return the 8 vertices of a cube with the given edge length."""
-    half = 0.5 * edge_nm
-    verts = []
-    for sx in (-half, half):
-        for sy in (-half, half):
-            for sz in (-half, half):
-                verts.append((sx, sy, sz))
-    return verts
+from ..geometry.core import fibonacci_sphere
+from ..geometry.shapes import cube_vertices
 
 
 def cube_union_positions(edge_nm, bead_contact_nm):
@@ -143,7 +124,7 @@ def cube_union_positions(edge_nm, bead_contact_nm):
     return pts
 
 
-def run_hpmc_prepack(device):
+def run_hpmc_prepack(device, N_cubes, R_target, cube_edge_nm, seed):
     """Stage-1: HPMC convex polyhedron MC with LS-like radius shrink."""
     print("\n=== HPMC convex-polyhedron pre-pack stage ===")
     snap = hoomd.Snapshot()
@@ -152,14 +133,14 @@ def run_hpmc_prepack(device):
     snap.particles.types = ['P']
     snap.particles.typeid[:] = 0
     R_work = R_target * HPMC_WORK_RADIUS_FACTOR
-    snap.particles.position[:] = fibonacci_sphere(N_cubes) * (R_work - 0.2 * CUBE_EDGE_NM)
+    snap.particles.position[:] = fibonacci_sphere(N_cubes) * (R_work - 0.2 * cube_edge_nm)
     snap.particles.orientation[:] = (1.0, 0.0, 0.0, 0.0)
 
-    sim = hoomd.Simulation(device=device, seed=SEED)
+    sim = hoomd.Simulation(device=device, seed=seed)
     sim.create_state_from_snapshot(snap)
 
     mc = hpmc.integrate.ConvexPolyhedron(default_d=30.0, default_a=0.5)
-    mc.shape['P'] = dict(vertices=cube_vertices(CUBE_EDGE_NM))
+    mc.shape['P'] = dict(vertices=cube_vertices(cube_edge_nm))
     sim.operations.integrator = mc
 
     def set_shell(radius_nm: float):
@@ -208,16 +189,16 @@ def run_hpmc_prepack(device):
     return centers, orient
 
 
-def build_md_sim(device, centers, orientations):
+def build_md_sim(device, centers, orientations, N_cubes, cube_edge_nm, seed):
     """Create MD Simulation with rigid WCA cubes on the target sphere."""
-    sim = hoomd.Simulation(device=device, seed=SEED + MD_SEED_OFFSET)
+    sim = hoomd.Simulation(device=device, seed=seed)
     snap = hoomd.Snapshot()
     snap.configuration.box = [Lbox, Lbox, Lbox, 0, 0, 0]
     snap.particles.N = N_cubes
     snap.particles.types = ['C', 'B']
     snap.particles.typeid[:] = 0
     snap.particles.mass[:] = 1.0
-    inertia_val = (1.0 / 6.0) * (CUBE_EDGE_NM ** 2)
+    inertia_val = (1.0 / 6.0) * (cube_edge_nm ** 2)
     snap.particles.moment_inertia[:] = np.full((N_cubes, 3), inertia_val)
     snap.particles.position[:] = centers
     snap.particles.orientation[:] = orientations
@@ -227,19 +208,37 @@ def build_md_sim(device, centers, orientations):
     return sim
 
 
-# --------------------------- Stage 1: HPMC -------------------------
-device = hoomd.device.auto_select()
-centers, orientations = run_hpmc_prepack(device)
+def run_simulation(
+    R_sphere_nm=2600.0,
+    cube_edge_nm=198.0,
+    target_coverage=0.90,
+    seed=42,
+    md_relax=False,
+    steps_anneal=600_000
+):
+    # Derived quantities
+    R_target = R_sphere_nm
+    N_cubes = int(round(4.0 * math.pi * R_target**2 * target_coverage / (cube_edge_nm**2)))
+    
+    print(f"Target radius R = {R_target:.1f} nm")
+    print(f"Approx. number of cubes N = {N_cubes} at φ = {target_coverage:.2f}")
+    print(f"HPMC shell: [{R_target - HPMC_SHELL_HALF:.1f}, "
+          f"{R_target + HPMC_SHELL_HALF:.1f}] nm")
 
-if not RUN_MD_RELAX:
-    shutil.copy('final_hpmc.gsd', 'final.gsd')
+    # Stage 1: HPMC
+    device = hoomd.device.auto_select()
+    centers, orientations = run_hpmc_prepack(device, N_cubes, R_target, cube_edge_nm, seed)
 
-# --------------------------- Stage 2: MD (optional) ---------------------------
-if RUN_MD_RELAX:
-    sim = build_md_sim(device, centers, orientations)
+    if not md_relax:
+        shutil.copy('final_hpmc.gsd', 'final.gsd')
+        print("Skipping MD relaxation. Final HPMC configuration written to final_hpmc.gsd.")
+        return
+
+    # Stage 2: MD
+    sim = build_md_sim(device, centers, orientations, N_cubes, cube_edge_nm, seed + MD_SEED_OFFSET)
 
     rigid = md.constrain.Rigid()
-    bead_positions = cube_union_positions(CUBE_EDGE_NM, BEAD_DIAM_NM)
+    bead_positions = cube_union_positions(cube_edge_nm, BEAD_DIAM_NM)
     rigid.body['C'] = dict(
         constituent_types=['B'] * len(bead_positions),
         positions=bead_positions,
@@ -250,6 +249,10 @@ if RUN_MD_RELAX:
     nlist = md.nlist.Cell(buffer=0.4)
     nlist.exclusions = ('body',)
     lj = md.pair.LJ(nlist=nlist, default_r_cut=0.0, mode='shift')
+    
+    sigma_bead = BEAD_DIAM_NM / (2.0 ** (1.0/6.0))
+    r_cut = BEAD_DIAM_NM
+    
     lj.r_cut[('B', 'B')] = r_cut
     lj.params[('B', 'B')] = dict(sigma=sigma_bead, epsilon=EPS_START)
     zero = dict(sigma=1.0, epsilon=0.0)
@@ -310,7 +313,7 @@ if RUN_MD_RELAX:
 
         print("  Annealing at target radius...")
         anneal_start = time.perf_counter()
-        sim.run(STEPS_ANNEAL)
+        sim.run(steps_anneal)
         anneal_elapsed = (time.perf_counter() - anneal_start) / 60.0
         print(f"  Anneal finished in {anneal_elapsed:.2f} min")
 
@@ -320,5 +323,13 @@ if RUN_MD_RELAX:
         if table in sim.operations.writers:
             sim.operations.writers.remove(table)
         log_file.close()
-else:
-    print("Skipping MD relaxation (RUN_MD_RELAX = False). Final HPMC configuration written to final_hpmc.gsd.")
+
+if __name__ == "__main__":
+    run_simulation(
+        R_sphere_nm=R_SPHERE_NM,
+        cube_edge_nm=CUBE_EDGE_NM,
+        target_coverage=TARGET_COVERAGE,
+        seed=SEED,
+        md_relax=RUN_MD_RELAX,
+        steps_anneal=STEPS_ANNEAL
+    )

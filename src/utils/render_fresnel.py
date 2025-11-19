@@ -21,14 +21,7 @@ RADIUS_NM = 2600.0
 CUBE_EDGE_NM = 198.0
 
 
-def cube_vertices(edge):
-    half = 0.5 * edge
-    verts = []
-    for sx in (-half, half):
-        for sy in (-half, half):
-            for sz in (-half, half):
-                verts.append((sx, sy, sz))
-    return np.asarray(verts, dtype=np.float32)
+from ..geometry.shapes import cube_vertices
 
 
 def main():

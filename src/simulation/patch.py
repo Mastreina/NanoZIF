@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from .geometry import gnomonic_project_point, lift_to_sphere, orthonormal_basis, rotate_basis
+from ..geometry import gnomonic_project_point, lift_to_sphere, orthonormal_basis, rotate_basis
 
 
 def _point_in_polygon(point: Tuple[float, float], polygon: np.ndarray) -> bool:

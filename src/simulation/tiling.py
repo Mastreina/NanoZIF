@@ -1,22 +1,24 @@
-"""蒙特卡洛铺展主循环实现。"""
+"""
+Monte Carlo simulation for tiling regular polygons on a sphere.
+"""
 
 from __future__ import annotations
 
 import json
 import math
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .geometry import fibonacci_sphere, random_unit_vector
-from .tile import RegularPolygonPatch
+from ..geometry.core import fibonacci_sphere, random_unit_vector
+from .patch import RegularPolygonPatch
 
 
 def _random_tangent_direction(normal: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """生成与法向量正交的随机单位向量。"""
+    """Generate a random unit vector orthogonal to the normal."""
     trial = rng.normal(size=3)
     trial -= np.dot(trial, normal) * normal
     norm = np.linalg.norm(trial)
@@ -26,7 +28,7 @@ def _random_tangent_direction(normal: np.ndarray, rng: np.random.Generator) -> n
 
 
 def _perturb_normal(normal: np.ndarray, step: float, rng: np.random.Generator) -> np.ndarray:
-    """在切平面方向旋转一定角度，返回新法向量。"""
+    """Rotate the normal vector by a small angle in a random tangent direction."""
     axis = _random_tangent_direction(normal, rng)
     cos_step = math.cos(step)
     sin_step = math.sin(step)
@@ -87,7 +89,7 @@ class SimulationResult:
 
 
 class SphereSurfaceMonteCarlo:
-    """负责球面正方体铺展的蒙特卡洛求解器。"""
+    """Monte Carlo solver for tiling regular polygons on a sphere."""
 
     def __init__(
         self,
@@ -160,7 +162,7 @@ class SphereSurfaceMonteCarlo:
             "truncated_cube": 8,
         }
         if shape not in shape_map:
-            raise ValueError(f"不支持的形状: {shape}")
+            raise ValueError(f"Unsupported shape: {shape}")
         return shape_map[shape]
 
     @staticmethod
@@ -171,7 +173,7 @@ class SphereSurfaceMonteCarlo:
         y = points[:, 1]
         return 0.5 * float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
 
-    # 状态管理 --------------------------------------------------------------
+    # State Management --------------------------------------------------------------
     @staticmethod
     def load_checkpoint(path: Path) -> dict:
         data = np.load(path, allow_pickle=False)
@@ -202,14 +204,14 @@ class SphereSurfaceMonteCarlo:
         radius = float(state.get("radius", self.cfg.radius))
         tile_side = float(state.get("tile_side", self.cfg.tile_side))
         if abs(radius - self.cfg.radius) > 1e-9 or abs(tile_side - self.cfg.tile_side) > 1e-9:
-            raise ValueError("Checkpoint配置与当前模拟参数不匹配")
+            raise ValueError("Checkpoint config mismatch")
         shape_sides_state = state.get("shape_sides")
         shape_sides = int(shape_sides_state) if shape_sides_state is not None else self._sides
         if shape_sides != self._sides:
-            raise ValueError("Checkpoint形状与当前配置不匹配")
+            raise ValueError("Checkpoint shape mismatch")
         shape_name = state.get("shape_name")
         if shape_name is not None and shape_name.lower() != self._shape:
-            raise ValueError("Checkpoint形状名称与当前配置不匹配")
+            raise ValueError("Checkpoint shape name mismatch")
         normals = np.asarray(state.get("normals", []), dtype=float)
         rotations = np.asarray(state.get("rotations", []), dtype=float)
         self.tiles = [
@@ -249,7 +251,7 @@ class SphereSurfaceMonteCarlo:
             rng_state=np.array(rng_state_json, dtype="U"),
         )
 
-    # 插入和移动 ------------------------------------------------------------
+    # Insertion and Movement ------------------------------------------------------------
     def _tile_overlaps(self, candidate: RegularPolygonPatch, collect_indices: bool = False):
         overlaps: List[int] = []
         for idx, tile in enumerate(self.tiles):
@@ -741,7 +743,7 @@ class SphereSurfaceMonteCarlo:
                     temperature=temp,
                 )
 
-    # 估计覆盖率 ------------------------------------------------------------
+    # Coverage Estimation ------------------------------------------------------------
     def _estimate_coverage(self) -> SimulationResult:
         if not self.tiles:
             points = fibonacci_sphere(self.cfg.coverage_samples, self.cfg.radius)
@@ -761,7 +763,7 @@ class SphereSurfaceMonteCarlo:
             coverage_mask=mask,
         )
 
-    # 主入口 ---------------------------------------------------------------
+    # Main Entry ---------------------------------------------------------------
     def run(self, show_progress: bool = False) -> SimulationResult:
         if self._steps_completed >= self.cfg.max_steps:
             return self._estimate_coverage()
@@ -771,7 +773,7 @@ class SphereSurfaceMonteCarlo:
         if show_progress:
             try:
                 from tqdm.auto import tqdm  # type: ignore
-            except ImportError:  # pragma: no cover - 仅在缺少依赖时触发
+            except ImportError:  # pragma: no cover
                 tqdm = None  # type: ignore
             if tqdm is not None:
                 progress_bar = tqdm(
@@ -799,49 +801,32 @@ class SphereSurfaceMonteCarlo:
                     and (step - self._last_targeted_insert_step) >= self.cfg.targeted_insert_trigger
                 )
                 if triggered:
-                    self._last_targeted_insert_step = step
-                    targeted_success = False
-                    attempts = max(1, self.cfg.targeted_insert_attempts)
-                    for _ in range(attempts):
-                        if self._attempt_targeted_insert():
-                            targeted_success = True
-                            break
-                    if targeted_success:
-                        changed = True
+                    if self._attempt_targeted_insert():
                         steps_without_change = 0
-                if not changed and steps_without_change >= self.cfg.stall_steps:
-                    self._steps_completed = step + 1
-                    if progress_bar is not None:
-                        progress_bar.update(1)
-                    break
+                        self._last_targeted_insert_step = step
+                if (
+                    self.cfg.global_relax_trigger > 0
+                    and steps_without_change > 0
+                    and steps_without_change % self.cfg.global_relax_trigger == 0
+                ):
+                    self._annealed_relaxation()
             else:
                 steps_without_change = 0
 
-            if changed and progress_bar is not None and hasattr(progress_bar, "set_description"):
-                progress_bar.set_description(f"Monte Carlo (tiles={len(self.tiles)})", refresh=False)
+            if self.cfg.stall_steps > 0 and steps_without_change >= self.cfg.stall_steps:
+                if progress_bar:
+                    progress_bar.write(f"Stalled at step {step} (no changes for {steps_without_change} steps).")
+                break
 
-            self._steps_completed = step + 1
-            if progress_bar is not None:
+            if self.cfg.checkpoint_interval > 0 and (step + 1) % self.cfg.checkpoint_interval == 0:
+                self._save_checkpoint(step + 1, steps_without_change)
+
+            if progress_bar:
                 progress_bar.update(1)
-            if (
-                self.cfg.global_relax_trigger > 0
-                and self._steps_completed % self.cfg.global_relax_trigger == 0
-            ):
-                self._annealed_relaxation()
-            if (
-                self.cfg.checkpoint_interval > 0
-                and self.checkpoint_path is not None
-                and (self._steps_completed % self.cfg.checkpoint_interval == 0)
-            ):
-                self._save_checkpoint(self._steps_completed, steps_without_change)
+                progress_bar.set_postfix(tiles=len(self.tiles), stalled=steps_without_change)
 
-        if progress_bar is not None:
+        if progress_bar:
             progress_bar.close()
 
-        self._annealed_relaxation()
-
-        if self.checkpoint_path is not None:
-            self._save_checkpoint(self._steps_completed, steps_without_change)
-        self._resume_steps_without_change = 0
-
+        self._steps_completed = self.cfg.max_steps
         return self._estimate_coverage()

@@ -1,111 +1,40 @@
 """
-硬多面体球形约束 MC（依据技术报告规范）。
-
-特性
-- 支持多类凸多面体（Cube / Octa / Rhombic Dodecahedron / Truncated RD）。
-- 粒子在球形硬壁内进行局域平移+旋转 MC，带有自适应步长。
-- 准静态压缩：按步长 α 缩小球半径 → 松弛若干 sweep → 若失败则回退并调小 α。
-- 广相采用包围球 + 三维网格粗筛，窄相使用 SAT。
+Hard Polyhedra Confinement MC: Simulate hard polyhedra inside a spherical container.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 import math
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.spatial import ConvexHull, HalfspaceIntersection
+from scipy.spatial import ConvexHull
 
-from .reversible_compression_mc import (
-    ConvexSpheropolyhedron,
-    sat_overlap_spheropolyhedra,
+from ..geometry.core import (
     normalize,
     quat_from_axis_angle,
     quat_mul,
 )
+from ..geometry.shapes import (
+    cube_vertices,
+    octa_vertices,
+    rhombic_dodecahedron_vertices,
+    truncated_rd_vertices,
+)
+from ..geometry.polyhedron import ConvexSpheropolyhedron, sat_overlap_spheropolyhedra
 
 Array3 = NDArray[np.floating]
 Quat = NDArray[np.floating]
 
 EPS = 1e-9
 
-
 def _poly_from_vertices(vertices: Array3) -> Tuple[ConvexSpheropolyhedron, float]:
     hull = ConvexHull(vertices)
     poly = ConvexSpheropolyhedron.from_vertices(vertices, sweep_radius=0.0)
     r_bound = float(np.linalg.norm(vertices, axis=1).max())
     return poly, r_bound
-
-
-def cube_vertices() -> Array3:
-    pts = []
-    scale = 1.0 / math.sqrt(3.0)
-    for sx in (-1.0, 1.0):
-        for sy in (-1.0, 1.0):
-            for sz in (-1.0, 1.0):
-                pts.append((sx * scale, sy * scale, sz * scale))
-    return np.array(pts, dtype=float)
-
-
-def octa_vertices() -> Array3:
-    return np.array(
-        [
-            (1.0, 0.0, 0.0),
-            (-1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, -1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            (0.0, 0.0, -1.0),
-        ],
-        dtype=float,
-    )
-
-
-def rhombic_dodecahedron_vertices() -> Array3:
-    pts = []
-    for axis in range(3):
-        for sign in (-1.0, 1.0):
-            vec = [0.0, 0.0, 0.0]
-            vec[axis] = 2.0 * sign
-            pts.append(tuple(vec))
-    for sx in (-1.0, 1.0):
-        for sy in (-1.0, 1.0):
-            for sz in (-1.0, 1.0):
-                pts.append((sx, sy, sz))
-    pts = np.array(pts, dtype=float)
-    pts /= np.linalg.norm(pts, axis=1).max()  # 归一化外接球半径
-    return pts
-
-
-def truncated_rd_vertices(truncation: float = 0.68) -> Array3:
-    """
-    通过对 rhombic dodecahedron 在每个顶点方向引入平行截平面获得 TRD。
-    truncation = 0 → 原始 RD, 0.68 ~ 实验默认。
-    """
-    trunc = float(np.clip(truncation, 0.0, 0.9))
-    base = rhombic_dodecahedron_vertices()
-    hull = ConvexHull(base)
-    halfspaces: List[Array3] = []
-    for eq in hull.equations:
-        halfspaces.append(eq.copy())
-    for v in base:
-        r = float(np.linalg.norm(v))
-        if r < 1e-9:
-            continue
-        u = v / r
-        offset = r * (1.0 - trunc)
-        halfspaces.append(np.array([u[0], u[1], u[2], -offset], dtype=float))
-    hs = np.vstack(halfspaces)
-    hs_int = HalfspaceIntersection(hs, np.zeros(3, dtype=float))
-    verts = hs_int.intersections
-    hull_trunc = ConvexHull(verts)
-    verts = hull_trunc.points[hull_trunc.vertices]
-    verts = hull_trunc.points  # use all unique vertices
-    verts /= np.linalg.norm(verts, axis=1).max()
-    return verts
-
 
 SHAPE_BUILDERS = {
     "cube": cube_vertices,
@@ -114,17 +43,15 @@ SHAPE_BUILDERS = {
     "trd": truncated_rd_vertices,
 }
 
-
 @dataclass
 class PolyhedronModel:
     body: ConvexSpheropolyhedron
     bounding_radius: float
 
-
 def build_polyhedron(name: str, truncation: float | None = None) -> PolyhedronModel:
     key = name.lower()
     if key not in SHAPE_BUILDERS:
-        raise ValueError(f"未知形状: {name}")
+        raise ValueError(f"Unknown shape: {name}")
     if key == "trd":
         verts = SHAPE_BUILDERS[key](truncation if truncation is not None else 0.68)
     else:
@@ -232,16 +159,16 @@ class HardPolyhedraConfinementMC:
             self.particles.append(Particle(pos=pos, quat=quat))
         if len(self.particles) < n:
             raise RuntimeError(
-                f"无法放置全部粒子 (N={n}). 成功 {len(self.particles)} 次, 尝试 {attempts}。"
+                f"Could not place all particles (N={n}). Success {len(self.particles)}, Attempts {attempts}."
             )
         self.cell_list = CellList(self.radius, cell_size=2.2 * self.shape.bounding_radius)
         self.cell_list.rebuild(self.particles)
 
     def _random_position(self) -> Array3:
-        # 拒绝采样：均匀取球内点（半径需要留出包围球）
+        # Rejection sampling: uniform point in sphere (radius must allow bounding sphere)
         limit = self.radius - self.shape.bounding_radius - 1e-3
         if limit <= 0:
-            raise RuntimeError("球半径不足以容纳粒子。")
+            raise RuntimeError("Sphere radius too small to contain particle.")
         while True:
             vec = self.rng.normal(size=3)
             vec = normalize(vec)
@@ -266,7 +193,7 @@ class HardPolyhedraConfinementMC:
 
     def _overlaps_configuration(self, pos: Array3, quat: Quat, ignore_idx: int | None = None) -> bool:
         if not self.cell_list.cells:
-            # during init fallback对所有粒子
+            # during init fallback to all particles
             candidates = range(len(self.particles))
         else:
             candidates = self.cell_list.neighbors(pos)
@@ -343,7 +270,7 @@ class HardPolyhedraConfinementMC:
         target_radius: float | None = None,
         progress_hook: Optional[callable] = None,
     ) -> None:
-        # 预平衡
+        # Pre-equilibration
         for sweep_idx in range(cfg.pre_sweeps):
             self.mc_sweep(cfg)
             if progress_hook:
@@ -366,7 +293,7 @@ class HardPolyhedraConfinementMC:
                     break
             if target_radius and self.radius <= target_radius:
                 break
-        # 最后再做一次松弛
+        # Final relaxation
         for sweep_idx in range(cfg.relax_sweeps):
             self.mc_sweep(cfg)
 
@@ -388,7 +315,7 @@ class HardPolyhedraConfinementMC:
         for _ in range(cfg.relax_sweeps):
             self.mc_sweep(cfg)
         if self.detect_any_overlap():
-            # 回退
+            # Backtrack
             self.particles = backup_particles
             self.radius = old_radius
             self.cell_list = CellList(self.radius, cell_size=2.2 * self.shape.bounding_radius)
@@ -447,11 +374,3 @@ class HardPolyhedraConfinementMC:
         if not values:
             return 0.0
         return float(np.mean(np.abs(values)))
-
-
-__all__ = [
-    "SimulationConfig",
-    "PolyhedronModel",
-    "build_polyhedron",
-    "HardPolyhedraConfinementMC",
-]

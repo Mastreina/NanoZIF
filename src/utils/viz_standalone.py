@@ -18,25 +18,6 @@ except ImportError:  # plotly 可选
     go = None
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="可视化球内硬多面体 MC 的 NPZ 输出")
-    ap.add_argument("--state", required=True, help="NPZ 文件路径（包含 positions/quaternions/radius）")
-    ap.add_argument("--png", required=True, help="输出 PNG 路径")
-    ap.add_argument("--html", default=None, help="若提供，则导出 Plotly HTML 三维交互图")
-    ap.add_argument("--sphere-steps", type=int, default=64, help="球面网格分辨率")
-    ap.add_argument("--marker-size", type=float, default=8.0)
-    ap.add_argument("--sphere-alpha", type=float, default=0.12)
-    ap.add_argument("--cmap", type=str, default="viridis", help="散点 colormap")
-    return ap
-
-
-def load_state(state_path: str) -> tuple[np.ndarray, float]:
-    data = np.load(state_path)
-    positions = data["positions"]
-    radius = float(data["radius"]) if "radius" in data else float(np.linalg.norm(positions, axis=1).max())
-    return positions, radius
-
-
 def render_png(
     positions: np.ndarray,
     radius: float,
@@ -86,7 +67,7 @@ def render_html(
     sphere_alpha: float,
 ) -> None:
     if go is None:
-        raise RuntimeError("Plotly 未安装，无法导出 HTML。请先 `pip install plotly`。")
+        raise RuntimeError("Plotly not installed, cannot export HTML. Please `pip install plotly`.")
     steps = max(8, sphere_steps)
     u = np.linspace(0.0, 2.0 * np.pi, steps)
     v = np.linspace(0.0, np.pi, steps // 2)
@@ -119,10 +100,22 @@ def render_html(
         os.makedirs(out_dir, exist_ok=True)
     fig.write_html(html_path, include_plotlyjs="cdn")
 
+def register_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument("--state", required=True, help="NPZ file path (containing positions/quaternions/radius)")
+    parser.add_argument("--png", required=True, help="Output PNG path")
+    parser.add_argument("--html", default=None, help="If provided, export Plotly HTML 3D interactive plot")
+    parser.add_argument("--sphere-steps", type=int, default=64, help="Sphere mesh resolution")
+    parser.add_argument("--marker-size", type=float, default=8.0)
+    parser.add_argument("--sphere-alpha", type=float, default=0.12)
+    parser.add_argument("--cmap", type=str, default="viridis", help="Scatter colormap")
 
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
+def load_state(state_path: str) -> tuple[np.ndarray, float]:
+    data = np.load(state_path)
+    positions = data["positions"]
+    radius = float(data["radius"]) if "radius" in data else float(np.linalg.norm(positions, axis=1).max())
+    return positions, radius
+
+def run(args: argparse.Namespace):
     positions, radius = load_state(args.state)
     render_png(
         positions=positions,
@@ -143,6 +136,11 @@ def main() -> None:
             sphere_alpha=args.sphere_alpha,
         )
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Visualize Hard Polyhedra MC NPZ output")
+    register_arguments(parser)
+    args = parser.parse_args()
+    run(args)
 
 if __name__ == "__main__":
     main()
