@@ -1,0 +1,17 @@
+# Local environment
+.venv/
+__pycache__/
+
+# VS Code settings cache
+.vscode/*
+!.vscode/settings.json
+
+# Simulation outputs and large artifacts
+results/**/raw/
+results/**/*.gsd
+results/**/*.npz
+results/**/*.csv
+outputs/
+
+# Misc
+.DS_Store
