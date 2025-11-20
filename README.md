@@ -142,20 +142,5 @@ python -m src.cli.main unidirectional equirect --shape square --R 8 --edge 1.5 -
 - **断点重渲染**：目录含 `checkpoint*.npz` 时，`python -m src.cli.main tiling --resume-from <checkpoint> --output-dir <目录>` 可快速生成投影/3D/HTML。
 - **完整重跑**：用 `result_summary.json` 字段映射参数：`radius_nm -> --radius`、`tile_side_nm -> --tile-side`、`shape -> --shape`、`max_steps -> --max-steps`、`stall_steps -> --stall-steps`、`insertion_probability -> --insert-prob`、`translation_step_deg -> --translation-step`、`rotation_step_deg -> --rotation-step`，其余 gap/targeted/global/energy/force 字段直接同名传入。长任务可加 `--progress`。
 
-### 已复现的数据
-`outputs/reproduction/` 提供代表性示例：
-- 可逆压缩：`reversible.npz` → `viz-npz` 生成 `reversible.png`。
-- 硬多面体：`hard_poly.npz/json` → `viz-npz` 生成 `hard_poly.png`。
-- 球面镶嵌：`tiling` 自动生成 `projection.png`、`view3d.png`（如传 HTML 也会输出）。
-- 单向吸附：`unidirectional equirect` 得到 `adsorption_square.png`。
-- 致密堆积：依赖 HOOMD；若未安装 HOOMD，CLI 会提示缺依赖。
 
-### 结果目录组织（摘要）
-为保持根目录整洁，权威数据放在 `outputs/` 下：
-- MOF 5:2 系列：`results_mof52_10k`、`results_mof52_strict`、`results_mof52_strict2`
-- R3 系列：`results_r3_dense`、`results_r3_strict`、`results_r3_energy`、`results_r3_force`、`results_r3_overlap`
-- 立方体及截断立方体：`results_cube52_5k`、`results_cube52_5k_html`、`results_truncated_cube_210`
-- 其他形状：`results_cube_5p1um`、`results_5p2um`、`results_dense_small_run1/2`、`results_square_dense`、`results_hexprism_5p8um`
-- 测试集：`results_tests_seed`、`results_tests_trunc`
 
-新增结果建议放在 `outputs/<项目>/<标签>`，大体积原始数据置于子目录（如 `raw/`）；若替代旧版本，可移入 `outputs/archive/<年月>/` 或删除。
