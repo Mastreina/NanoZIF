@@ -3,15 +3,16 @@ name = "monte-carlo"
 version = "0.1.0"
 description = "Monte Carlo surface tiling and HOOMD-based compression workflows."
 readme = "SHAPE_GUIDE.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "numpy>=1.24",
-    "matplotlib>=3.7",
-    "plotly>=5.18",
-    "tqdm>=4.66",
-    "scipy>=1.10",
-    "gsd>=3.0",
-    "pillow>=10.0",
+    "numpy==2.3.4",
+    "matplotlib==3.10.7",
+    "plotly==6.4.0",
+    "tqdm==4.67.1",
+    "scipy==1.16.3",
+    "gsd==4.2.0",
+    "pillow==12.0.0",
+    "narwhals==2.11.0",
 ]
 
 [build-system]
